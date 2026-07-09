@@ -10,6 +10,9 @@ let db;
 
 export async function connectDb() {
   if (db) return db;
+  if (!uri) {
+    throw new Error("MONGODB_URI environment variable is not set or is empty. Check Render's Environment tab — the variable name must be exactly 'MONGODB_URI', and the service needs a redeploy after adding/changing it.");
+  }
   client = new MongoClient(uri);
   await client.connect();
   db = client.db("matchbook");

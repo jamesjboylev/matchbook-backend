@@ -120,7 +120,7 @@ app.post("/api/trades", async (req, res) => {
       strSettleDate: requiredSettleDate,
       status: "Pending", breakTypes: [], age: 0,
       assigned: "—",
-      recallDate: null, recallDueDate: null, returnDate: null, closed: false,
+      recalls: [], returns: [], dividendEvents: [], closed: false,
       notes: [{ author: "System", text: `Trade captured. Required settlement T+1 is ${requiredSettleDate}; required collateral is ${requiredCollateral.toFixed(2)} (${(marginRate * 100).toFixed(0)}% of ${marketValue.toFixed(2)} market value). Awaiting next reconciliation run.` }],
     };
     await insertTrade(trade);
