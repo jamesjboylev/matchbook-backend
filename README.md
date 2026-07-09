@@ -1,87 +1,105 @@
-# Matchbook price backend
+# Matchbook backend (v2 — persistent)
 
-A tiny Express server that fetches real equity quotes server-side (hiding
-your API key and avoiding the browser CORS problem) and serves them to the
-Matchbook frontend at `/api/quote?symbols=AAPL,MSFT`.
+This is the full rewrite: the backend now **stores your trade book** and
+**runs reconciliation on its own schedule**, independent of whether your
+browser tab is open. The old version only proxied price quotes; this one
+is the actual source of truth.
 
-## Why you need this at all
+## What changed from v1
 
-The frontend alone can't get real prices reliably:
-- Most market data providers don't allow direct browser calls (no CORS
-  headers), so a `fetch()` straight from the page gets blocked.
-- Any API key you put in frontend JavaScript is visible to anyone who views
-  source — public-facing keys get abused and revoked fast.
-- A server can cache quotes for a few seconds so a burst of page loads
-  doesn't blow through a free-tier rate limit.
+- **New files**: `db.js` (MongoDB persistence), `reconcile.js` (the same
+  reconciliation math the frontend uses, ported here), `prices.js` (price
+  fetching, now server-side), `scheduler.js` (the catch-up scheduler).
+- **New dependency**: MongoDB, via a free Atlas cluster.
+- **New endpoints**: `GET/POST /api/trades`, `PUT/DELETE /api/trades/:id`,
+  `POST /api/reconcile`, `GET/PUT /api/settings`.
+- `/api/quote` still works exactly as before.
 
-This backend solves all three: it holds the key, it's the one actually
-calling the data provider, and your frontend just calls *your* server.
+## An honest limitation, upfront
 
-## 1. Get a free API key
+Render's free tier doesn't just idle between requests — it **suspends the
+entire process**. Any in-memory timer (including this scheduler) stops
+while the service is asleep. So "runs at exactly 4:30 PM even if nobody's
+touched it in days" isn't actually achievable for free without one of:
 
-This uses [Finnhub](https://finnhub.io/register) — free tier, no credit
-card, instant signup, real-time-ish US equity quotes. (Bonds/Treasuries
-generally require a specialized fixed-income data vendor and aren't
-covered by this free tier — that's why those two lines in Matchbook stay
-labeled "Simulated" even with this backend running.)
+- Upgrading to Render's paid tier (a few dollars/month, never sleeps), or
+- Using a free external ping service (see step 5) to periodically wake it
 
-Sign up, copy your API key from the dashboard.
+What this **does** guarantee, on the free tier: every time the service is
+awake for any reason (a frontend request, a keep-alive ping), it checks
+"has today's batch run yet?" and catches up immediately if it's overdue.
+That's the realistic, honest version of "nobody has to click a button" —
+not perfectly on-the-dot timing, but never more than one wake-up cycle
+behind.
+
+## 1. Get a free MongoDB Atlas cluster
+
+1. Go to **mongodb.com/cloud/atlas/register** — free, no credit card for
+   the M0 tier (genuinely free forever, not a trial).
+2. Create a free M0 cluster (any region).
+3. Under **Database Access**, create a database user with a password.
+4. Under **Network Access**, add `0.0.0.0/0` (allow from anywhere) — fine
+   for this project; a production system would restrict this.
+5. Click **Connect** → **Drivers** → copy the connection string. It looks
+   like:
+   ```
+   mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/
+   ```
+   Replace `<password>` in it with your actual database user's password.
 
 ## 2. Run it locally
 
 ```bash
-cd matchbook-backend
+cd matchbook-backend-v2
 npm install
 cp .env.example .env
-# paste your key into .env
+# paste your Finnhub key and Mongo connection string into .env
 npm start
 ```
 
 Test it:
 ```bash
-curl "http://localhost:3001/api/quote?symbols=AAPL,MSFT"
+curl "http://localhost:3001/api/trades"
+```
+Should return `{"trades":[]}` on a fresh database.
+
+## 3. Redeploy on Render
+
+Same Render service you already have, updated:
+1. Push these new files to your `matchbook-backend` GitHub repo (replacing
+   the old `server.js`, adding the new files).
+2. In Render's dashboard, go to your service → **Environment** → add a new
+   variable: `MONGODB_URI` = your connection string from step 1.
+3. Render will auto-redeploy on the push. Check the logs for
+   "Connected to MongoDB" to confirm it worked.
+
+## 4. Test the new endpoints
+
+```bash
+curl -X POST https://your-service.onrender.com/api/trades \
+  -H "Content-Type: application/json" \
+  -d '{"security":"AAPL","counterparty":"Goldman Sachs","intQty":1000,"intRate":1.5,"intColl":300000,"collateralType":"Cash","tradeDate":"2026-07-09","intSettleDate":"2026-07-10"}'
 ```
 
-You should get back something like:
-```json
-{
-  "quotes": {
-    "AAPL": { "price": 305.12, "prevClose": 303.80, "high": 307.40, "low": 302.10, "asOf": "..." },
-    "MSFT": { "price": 388.44, "prevClose": 386.90, "high": 390.10, "low": 385.00, "asOf": "..." }
-  },
-  "asOf": "..."
-}
+Should return the created trade with a computed `strColl` (required
+collateral) and `strSettleDate` (T+1).
+
+```bash
+curl https://your-service.onrender.com/api/trades
 ```
 
-## 3. Point the Matchbook frontend at it
+Should show that trade back.
 
-In `matchbook-recon-platform.html` (or the `.jsx` version), find the
-**Backend URL** field in the price tracker panel and paste in
-`http://localhost:3001` while testing locally, or your deployed URL (step 4)
-once it's live. The app will automatically switch from simulated prices to
-this backend's real quotes.
+## 5. (Recommended) Keep it awake with a free ping service
 
-## 4. Deploy it for free (so it's not just running on your laptop)
+Go to **cron-job.org** (free, no card) and set up a job hitting
+`https://your-service.onrender.com/health` every 10-15 minutes. This is
+what makes the schedule check actually fire close to the scheduled time,
+rather than only whenever the frontend happens to make a request.
 
-**Render.com** is the easiest free option:
-1. Push this folder to a GitHub repo (just this `matchbook-backend` folder, or the whole project).
-2. Go to [render.com](https://render.com) → New → Web Service → connect your repo.
-3. Root directory: `matchbook-backend` (if it's part of a bigger repo).
-4. Build command: `npm install` — Start command: `npm start`.
-5. Add an environment variable: `FINNHUB_API_KEY` = your key.
-6. Deploy. Render gives you a URL like `https://matchbook-backend.onrender.com`.
+## What's next
 
-Paste that URL into the Backend URL field in the app and you're running on
-real quotes, hosted for free.
-
-(Free tier note: Render's free web services spin down after inactivity and
-take ~30–60 seconds to wake back up on the next request — fine for a demo,
-just don't expect instant response on the very first refresh after it's
-been idle.)
-
-## Security note if you go beyond a demo
-
-- Restrict `cors()` in `server.js` to your actual frontend's origin instead
-  of allowing all origins.
-- Never commit your `.env` file — it's already covered by a typical
-  `.gitignore`, but double check before pushing.
+Once this is confirmed working, the frontend needs to be pointed at these
+new endpoints instead of managing trades purely in local browser state.
+That's a real rewiring job — come back and we'll do it once you've
+confirmed the database connection works.
