@@ -4,13 +4,8 @@ import "dotenv/config";
 
 import { getTrades, getTrade, insertTrade, updateTrade, deleteTrade, getSettings, updateSettings, replaceAllTrades } from "./db.js";
 import { fetchQuote, fetchBenchmarkRate } from "./prices.js";
-import { reconcileTrade, computeRequiredCollateral, addBusinessDays, MARGIN_RATES, roundCents, runReconciliationPass } from "./reconcile.js";
+import { reconcileTrade, computeRequiredCollateral, addBusinessDays, MARGIN_RATES, roundCents, runReconciliationPass, fmtUsd, simulateAgentConfirmation } from "./reconcile.js";
 import { checkAndRunSchedule } from "./scheduler.js";
-
-// Matches the frontend's fmtUsd exactly — used in any note text generated
-// server-side, so a trade captured while synced reads the same as one
-// captured locally, instead of showing a raw unformatted number.
-const fmtUsd = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const app = express();
 app.use(cors()); // for a real deployment, restrict this to your frontend's origin
@@ -107,26 +102,34 @@ app.post("/api/trades", async (req, res) => {
     const collateralType = b.collateralType === "Non-cash" ? "Non-cash" : "Cash";
     const marginRate = MARGIN_RATES[collateralType] || 1.02;
     const marketValue = intQty * priceInfo.price;
-    const requiredCollateral = roundCents(marketValue * marginRate);
     const requiredSettleDate = addBusinessDays(b.tradeDate, 1);
+
+    // Simulate the agent's own confirmation — an independent system
+    // reporting its view, not a guaranteed mirror of what was booked.
+    const { strQty, strRate, strSettleDate, strColl, discrepancies } = simulateAgentConfirmation({
+      intQty, intRate, expectedSettleDate: requiredSettleDate, price: priceInfo.price, marginRate,
+    });
+    const captureNote = discrepancies.length === 0
+      ? `Trade captured. Agent confirmation received and matches: settlement ${strSettleDate}, ${fmtUsd(strColl)} required collateral (${(marginRate * 100).toFixed(0)}% of ${fmtUsd(marketValue)} market value). Awaiting next reconciliation run.`
+      : `Trade captured. Agent confirmation received — their system ${discrepancies.join("; and their system also ")}. Awaiting next reconciliation run.`;
 
     const trade = {
       id: b.id?.trim() || `SL-${Math.floor(10000 + Math.random() * 89999)}`,
       counterparty: String(b.counterparty).trim(),
       security, cusip: "",
-      intQty, strQty: intQty, originalQty: intQty,
-      intRate, strRate: intRate,
-      intColl, strColl: requiredCollateral,
+      intQty, strQty, originalQty: intQty,
+      intRate, strRate,
+      intColl, strColl,
       collateralType,
       borrowClass: b.borrowClass || "General Collateral",
       specialTier: b.borrowClass === "Special" ? (b.specialTier || "Warm") : null,
       tradeDate: b.tradeDate,
       intSettleDate: b.intSettleDate,
-      strSettleDate: requiredSettleDate,
+      strSettleDate,
       status: "Pending", breakTypes: [], age: 0,
       assigned: "—",
       recalls: [], returns: [], dividendEvents: [], closed: false,
-      notes: [{ author: "System", text: `Trade captured. Required settlement T+1 is ${requiredSettleDate}; required collateral is ${fmtUsd(requiredCollateral)} (${(marginRate * 100).toFixed(0)}% of ${fmtUsd(marketValue)} market value). Awaiting next reconciliation run.` }],
+      notes: [{ author: "System", text: captureNote }],
     };
     await insertTrade(trade);
     res.status(201).json({ trade });

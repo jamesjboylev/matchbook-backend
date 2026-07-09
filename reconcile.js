@@ -123,3 +123,52 @@ export function runReconciliationPass(trades, prices) {
 
   return { trades: updated, summary: { matched, broken, marginCalls, resolved, breakCounts, total: matched + broken } };
 }
+
+export const fmtNum = (n) => n.toLocaleString("en-US");
+export const fmtUsd = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Simulates the agent/street side as an independent system reporting its
+// own view of the trade, not a guaranteed mirror of whatever was booked —
+// matches the frontend's copy of this exactly, so a trade captured while
+// synced behaves the same as one captured locally.
+export function simulateAgentConfirmation({ intQty, intRate, expectedSettleDate, price, marginRate }) {
+  let strQty = intQty;
+  let strRate = intRate;
+  let strSettleDate = expectedSettleDate;
+  let agentPrice = price;
+  const discrepancies = [];
+
+  if (Math.random() < 0.25) {
+    const pool = ["quantity", "rate", "settlement", "price"];
+    const causeCount = Math.random() < 0.85 ? 1 : 2;
+    const causes = [];
+    while (causes.length < causeCount) {
+      const c = pool[Math.floor(Math.random() * pool.length)];
+      if (!causes.includes(c)) causes.push(c);
+    }
+    causes.forEach(cause => {
+      if (cause === "quantity") {
+        const lot = [100, 200, 300][Math.floor(Math.random() * 3)];
+        strQty = Math.max(0, intQty - lot);
+        discrepancies.push(`reports ${fmtNum(strQty)} shares (a shortfall vs. the ${fmtNum(intQty)} instructed — possible partial settlement fail on their end)`);
+      }
+      if (cause === "rate") {
+        const delta = Math.random() > 0.5 ? 0.15 : -0.15;
+        strRate = +(intRate + delta).toFixed(2);
+        discrepancies.push(`reports a rate of ${strRate}% vs. the ${intRate}% instructed (likely a stale rate on their books)`);
+      }
+      if (cause === "settlement") {
+        strSettleDate = addBusinessDays(expectedSettleDate, Math.random() > 0.5 ? 1 : 2);
+        discrepancies.push(`reports settlement as ${strSettleDate} vs. the ${expectedSettleDate} expected (their processing lag)`);
+      }
+      if (cause === "price" && price) {
+        const priceDelta = (Math.random() - 0.5) * 0.01;
+        agentPrice = roundCents(price * (1 + priceDelta));
+        discrepancies.push(`is pricing this off ${fmtUsd(agentPrice)}/share vs. your ${fmtUsd(price)} (a different pricing source or snapshot time)`);
+      }
+    });
+  }
+
+  const strColl = price ? roundCents(strQty * agentPrice * marginRate) : null;
+  return { strQty, strRate, strSettleDate, strColl, discrepancies };
+}
