@@ -7,6 +7,11 @@ import { fetchQuote, fetchBenchmarkRate } from "./prices.js";
 import { reconcileTrade, computeRequiredCollateral, addBusinessDays, MARGIN_RATES, roundCents, runReconciliationPass } from "./reconcile.js";
 import { checkAndRunSchedule } from "./scheduler.js";
 
+// Matches the frontend's fmtUsd exactly — used in any note text generated
+// server-side, so a trade captured while synced reads the same as one
+// captured locally, instead of showing a raw unformatted number.
+const fmtUsd = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 const app = express();
 app.use(cors()); // for a real deployment, restrict this to your frontend's origin
 app.use(express.json());
@@ -121,7 +126,7 @@ app.post("/api/trades", async (req, res) => {
       status: "Pending", breakTypes: [], age: 0,
       assigned: "—",
       recalls: [], returns: [], dividendEvents: [], closed: false,
-      notes: [{ author: "System", text: `Trade captured. Required settlement T+1 is ${requiredSettleDate}; required collateral is ${requiredCollateral.toFixed(2)} (${(marginRate * 100).toFixed(0)}% of ${marketValue.toFixed(2)} market value). Awaiting next reconciliation run.` }],
+      notes: [{ author: "System", text: `Trade captured. Required settlement T+1 is ${requiredSettleDate}; required collateral is ${fmtUsd(requiredCollateral)} (${(marginRate * 100).toFixed(0)}% of ${fmtUsd(marketValue)} market value). Awaiting next reconciliation run.` }],
     };
     await insertTrade(trade);
     res.status(201).json({ trade });
