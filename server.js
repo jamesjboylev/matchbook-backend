@@ -109,7 +109,7 @@ app.post("/api/trades", async (req, res) => {
       id: b.id?.trim() || `SL-${Math.floor(10000 + Math.random() * 89999)}`,
       counterparty: String(b.counterparty).trim(),
       security, cusip: "",
-      intQty, strQty: intQty,
+      intQty, strQty: intQty, originalQty: intQty,
       intRate, strRate: intRate,
       intColl, strColl: requiredCollateral,
       collateralType,
